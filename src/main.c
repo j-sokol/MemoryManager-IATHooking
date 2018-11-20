@@ -76,6 +76,7 @@ void(*RealFree) (void *);
 
 int MallocDebug_logger(char mode, size_t size, void* addr)
 {
+	/* Append mode */
 	if (addr && mode == 'a')
 	{
 		if (size == 0)
@@ -90,9 +91,10 @@ int MallocDebug_logger(char mode, size_t size, void* addr)
 				return 1;
 			}
 		}
-		printf("Alloc of mem at addr: %p\n", addr);
+		//printf("Alloc of mem at addr: %p\n", addr);
 
 	}
+	/* Remove mode */
 	else if (addr && mode == 'r')
 	{
 		for (size_t i = 0; i < LOGSIZE; ++i)
@@ -100,7 +102,7 @@ int MallocDebug_logger(char mode, size_t size, void* addr)
 			if (LogArray[i].is_used == 'y' && LogArray[i].addr == addr)
 			{
 				LogArray[i].is_used = 'n';
-				printf("Free of mem at addr: %p\n", addr);
+				//printf("Free of mem at addr: %p\n", addr);
 				return 1;
 			}
 		}
@@ -113,7 +115,7 @@ void* MallocDebug_malloc(size_t size)
 {
 	void * addr = RealMalloc(size);
 	MallocDebug_logger('a', size, addr);
-	printf("Hooked malloc; addr: %p, size: %d\n", addr, size);
+	//printf("Hooked malloc; addr: %p, size: %d\n", addr, size);
 	return addr;
 }
 
@@ -121,7 +123,7 @@ void* MallocDebug_calloc(size_t num, size_t size)
 {
 	void * addr = RealCalloc(num, size);
 	MallocDebug_logger('a', size*num, addr);
-	printf("Hooked calloc; addr: %p, size: %d\n", addr, size);
+	//printf("Hooked calloc; addr: %p, size: %d\n", addr, size);
 	return addr;
 }
 
@@ -131,7 +133,7 @@ void* MallocDebug_realloc(void * addr, size_t size)
 	MallocDebug_logger('r', 0, addr);
 	addr = RealRealloc(addr, size);
 	MallocDebug_logger('a', size, addr);
-	printf("Hooked realloc; addr: %p, size: %d\n", addr, size);
+	//printf("Hooked realloc; addr: %p, size: %d\n", addr, size);
 
 	return addr;
 }
@@ -139,7 +141,7 @@ void* MallocDebug_realloc(void * addr, size_t size)
 
 void MallocDebug_free(void * addr)
 {
-	printf("Hooked free; addr: %p\n", addr);
+	//printf("Hooked free; addr: %p\n", addr);
 	if (MallocDebug_logger('r', 0, addr))
 		RealFree(addr);
 }
@@ -205,7 +207,9 @@ int main()
 	free(str2);
 	free(str2);
 	void * str3 = realloc(malloc(30), 5);
+	str3 = realloc(str3, 5);
 	void * str4 = realloc(malloc(30), 0);
+	str4 = realloc(str4, 0);
 	free(str);
 
 	MallocDebug_Done();
