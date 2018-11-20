@@ -14,57 +14,52 @@ struct Log
 struct Log LogArray[LOGSIZE];
 char * hooked_dll = "ucrtbased.dll";
 
-int ModifyImportTable(IMAGE_IMPORT_DESCRIPTOR* iid, void* target,void* replacement)
-{
-	IMAGE_THUNK_DATA* itd = (IMAGE_THUNK_DATA*)(((char*)GetModuleHandle(NULL)) + iid->FirstThunk);
-	while (itd->u1.Function)
-	{
-		if (((void*)itd->u1.Function) == target)
-		{
-			/* Remove read-only protection from memory area */
-			MEMORY_BASIC_INFORMATION mbi;
-			VirtualQuery(itd, &mbi, sizeof(MEMORY_BASIC_INFORMATION));
-			VirtualProtect(mbi.BaseAddress, mbi.RegionSize, PAGE_READWRITE, &mbi.Protect);
-
-			void * original = *((void**)itd);
-
-			/* Replace function in IAT */
-			*((void**)itd) = replacement;
-
-			/* Enable read-only permissions */
-			VirtualProtect(mbi.BaseAddress, mbi.RegionSize, mbi.Protect, &mbi.Protect);
-
-			return 1;
-		}
-
-		++itd;
-	}
-	return 0;
-}
 
 
 int InstallHook(LPCSTR module, LPCSTR function, void* hook, void** original)
 {
 	HMODULE process = GetModuleHandle(NULL);
 
-	/* Save address of original function from DLL */
-	*original = (void*)GetProcAddress(GetModuleHandleA(module), function);
-	
-	PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)process;
-	PIMAGE_NT_HEADERS pNTHeaders = (PIMAGE_NT_HEADERS)(((BYTE*)pDosHeader) + pDosHeader->e_lfanew);
-	IMAGE_OPTIONAL_HEADER optionalHeader = pNTHeaders->OptionalHeader;
+	PIMAGE_DOS_HEADER dos_header = (PIMAGE_DOS_HEADER)process;
+	PIMAGE_NT_HEADERS nt_headers = (PIMAGE_NT_HEADERS)(((BYTE*)dos_header) + dos_header->e_lfanew);
+	IMAGE_OPTIONAL_HEADER optionalHeader = nt_headers->OptionalHeader;
 	IMAGE_DATA_DIRECTORY * dataDirectory = optionalHeader.DataDirectory;
-	IMAGE_IMPORT_DESCRIPTOR  * iid = (IMAGE_IMPORT_DESCRIPTOR*)(((BYTE*)pDosHeader) + dataDirectory[1].VirtualAddress);
+	IMAGE_IMPORT_DESCRIPTOR  * iid = (IMAGE_IMPORT_DESCRIPTOR*)(((BYTE*)dos_header) + dataDirectory[1].VirtualAddress);
 
 
 	/* Loop through imported DLLs */
 	while (iid->Characteristics)
 	{
-		//const char* name = ((char*)process) + iid->Name;
-		char * lib_name = (char*)(((BYTE*)pDosHeader) + iid->Name);
-		if (stricmp(lib_name, module) == 0) 
+		const char* lib_name = ((char*)process) + iid->Name;
+		if (stricmp(lib_name, module) == 0)
 		{
-			ModifyImportTable(iid, *original, hook);
+			IMAGE_THUNK_DATA * itd_name = ((IMAGE_THUNK_DATA*)(((char*)GetModuleHandle(NULL)) + iid->OriginalFirstThunk));
+			IMAGE_THUNK_DATA * itd_addr = ((IMAGE_THUNK_DATA*)(((char*)GetModuleHandle(NULL)) + iid->FirstThunk));
+
+			/* Loop through functions in DLL */
+			while (itd_name->u1.AddressOfData)
+			{
+				char * funcName = ((IMAGE_IMPORT_BY_NAME*)(((char*)GetModuleHandle(NULL)) + itd_name->u1.AddressOfData))->Name;
+				if (strcmp(funcName, function) == 0)
+				{
+					/* Save address of original function from DLL */
+					*original = (void*)itd_addr->u1.Function;
+					/* Remove read-only protection from memory area */
+					MEMORY_BASIC_INFORMATION mbi;
+					VirtualQuery(itd_addr, &mbi, sizeof(MEMORY_BASIC_INFORMATION));
+					VirtualProtect(mbi.BaseAddress, mbi.RegionSize, PAGE_READWRITE, &mbi.Protect);
+
+					/* Replace function */
+					*((void**)itd_addr) = hook;
+
+					/* Enable read-only permissions */
+					VirtualProtect(mbi.BaseAddress, mbi.RegionSize, mbi.Protect, &mbi.Protect);
+
+					return 1;
+				}
+				++itd_name;
+				++itd_addr;
+			}
 			return 1;
 		}
 		++iid;
@@ -73,34 +68,11 @@ int InstallHook(LPCSTR module, LPCSTR function, void* hook, void** original)
 	return 0;
 }
 
-int InstallUnhook(LPCSTR module, LPCSTR function, void* hook, void** original)
-{
-	HMODULE process = GetModuleHandle(NULL);
-
-	PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)process;
-	PIMAGE_NT_HEADERS pNTHeaders = (PIMAGE_NT_HEADERS)(((BYTE*)pDosHeader) + pDosHeader->e_lfanew);
-	IMAGE_OPTIONAL_HEADER optionalHeader = pNTHeaders->OptionalHeader;
-	IMAGE_DATA_DIRECTORY * dataDirectory = optionalHeader.DataDirectory;
-	IMAGE_IMPORT_DESCRIPTOR  * iid = (IMAGE_IMPORT_DESCRIPTOR*)(((BYTE*)pDosHeader) + dataDirectory[1].VirtualAddress);
-	/* Loop through imported DLLs */
-	while (iid->Characteristics)
-	{
-		const char* name = ((char*)process) + iid->Name;
-		if (stricmp(name, module) == 0)
-		{
-			*original = ModifyImportTable(iid, *original, hook);
-			return 1;
-		}
-		iid += 1;
-	}
-	return 0;
-}
-
-int (__stdcall *RealMessageBoxA)(HWND, LPCSTR, LPCSTR, UINT);
+int(__stdcall *RealMessageBoxA)(HWND, LPCSTR, LPCSTR, UINT);
 void* (*RealMalloc) (size_t);
 void* (*RealCalloc) (size_t, size_t);
-void* ( *RealRealloc) (void *, size_t);
-void ( *RealFree) (void *);
+void* (*RealRealloc) (void *, size_t);
+void(*RealFree) (void *);
 
 int MallocDebug_logger(char mode, size_t size, void* addr)
 {
@@ -176,7 +148,7 @@ void MallocDebug_free(void * addr)
 void* (*HookedMalloc) (size_t) = MallocDebug_malloc;
 void* (*HookedCalloc) (size_t, size_t) = MallocDebug_calloc;
 void* (*HookedRealloc) (void *, size_t) = MallocDebug_realloc;
-void  (*HookedFree) (void *) = MallocDebug_free;
+void(*HookedFree) (void *) = MallocDebug_free;
 
 
 void MallocDebug_Init(void)
@@ -202,10 +174,11 @@ void MallocDebug_Init(void)
 void MallocDebug_Done(void)
 {
 	/* Unhook functions back to original ones */
-	InstallUnhook(hooked_dll, "malloc", (void*)(*RealMalloc), (void**)&HookedMalloc);
-	InstallUnhook(hooked_dll, "free", (void*)(*RealFree), (void**)(&HookedFree));
-	InstallUnhook(hooked_dll, "calloc", (void*)(*RealCalloc), (void**)&HookedCalloc);
-	InstallUnhook(hooked_dll, "realloc", (void*)(*RealRealloc), (void**)&HookedRealloc);
+	InstallHook(hooked_dll, "malloc", (void*)(*RealMalloc), (void**)&HookedMalloc);
+	InstallHook(hooked_dll, "free", (void*)(*RealFree), (void**)(&HookedFree));
+	InstallHook(hooked_dll, "calloc", (void*)(*RealCalloc), (void**)&HookedCalloc);
+	InstallHook(hooked_dll, "realloc", (void*)(*RealRealloc), (void**)&HookedRealloc);
+
 
 	/* Check if there are any initialized memory blocks left */
 	printf("======= REPORT =======\n");
