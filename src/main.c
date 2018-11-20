@@ -68,7 +68,6 @@ int InstallHook(LPCSTR module, LPCSTR function, void* hook, void** original)
 	return 0;
 }
 
-int(__stdcall *RealMessageBoxA)(HWND, LPCSTR, LPCSTR, UINT);
 void* (*RealMalloc) (size_t);
 void* (*RealCalloc) (size_t, size_t);
 void* (*RealRealloc) (void *, size_t);
