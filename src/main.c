@@ -26,6 +26,8 @@ int ModifyImportTable(IMAGE_IMPORT_DESCRIPTOR* iid, void* target,void* replaceme
 			VirtualQuery(itd, &mbi, sizeof(MEMORY_BASIC_INFORMATION));
 			VirtualProtect(mbi.BaseAddress, mbi.RegionSize, PAGE_READWRITE, &mbi.Protect);
 
+			void * original = *((void**)itd);
+
 			/* Replace function in IAT */
 			*((void**)itd) = replacement;
 
@@ -48,15 +50,23 @@ int InstallHook(LPCSTR module, LPCSTR function, void* hook, void** original)
 	/* Save address of original function from DLL */
 	*original = (void*)GetProcAddress(GetModuleHandleA(module), function);
 	
-	ULONG entrySize;
-	IMAGE_IMPORT_DESCRIPTOR* iid = (IMAGE_IMPORT_DESCRIPTOR*)ImageDirectoryEntryToData(process, 1, IMAGE_DIRECTORY_ENTRY_IMPORT, &entrySize);
+	PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)process;
+	PIMAGE_NT_HEADERS pNTHeaders = (PIMAGE_NT_HEADERS)(((BYTE*)pDosHeader) + pDosHeader->e_lfanew);
+	IMAGE_OPTIONAL_HEADER optionalHeader = pNTHeaders->OptionalHeader;
+	IMAGE_DATA_DIRECTORY * dataDirectory = optionalHeader.DataDirectory;
+	IMAGE_IMPORT_DESCRIPTOR  * iid = (IMAGE_IMPORT_DESCRIPTOR*)(((BYTE*)pDosHeader) + dataDirectory[1].VirtualAddress);
+
 
 	/* Loop through imported DLLs */
-	while (iid->Name)
+	while (iid->Characteristics)
 	{
-		const char* name = ((char*)process) + iid->Name;
-		if (stricmp(name, module) == 0)
-			return ModifyImportTable(iid, *original, hook);
+		//const char* name = ((char*)process) + iid->Name;
+		char * lib_name = (char*)(((BYTE*)pDosHeader) + iid->Name);
+		if (stricmp(lib_name, module) == 0) 
+		{
+			ModifyImportTable(iid, *original, hook);
+			return 1;
+		}
 		++iid;
 	}
 
@@ -66,15 +76,21 @@ int InstallHook(LPCSTR module, LPCSTR function, void* hook, void** original)
 int InstallUnhook(LPCSTR module, LPCSTR function, void* hook, void** original)
 {
 	HMODULE process = GetModuleHandle(NULL);
-	ULONG entrySize;
-	IMAGE_IMPORT_DESCRIPTOR* iid = (IMAGE_IMPORT_DESCRIPTOR*)ImageDirectoryEntryToData(process, 1, IMAGE_DIRECTORY_ENTRY_IMPORT, &entrySize);
 
+	PIMAGE_DOS_HEADER pDosHeader = (PIMAGE_DOS_HEADER)process;
+	PIMAGE_NT_HEADERS pNTHeaders = (PIMAGE_NT_HEADERS)(((BYTE*)pDosHeader) + pDosHeader->e_lfanew);
+	IMAGE_OPTIONAL_HEADER optionalHeader = pNTHeaders->OptionalHeader;
+	IMAGE_DATA_DIRECTORY * dataDirectory = optionalHeader.DataDirectory;
+	IMAGE_IMPORT_DESCRIPTOR  * iid = (IMAGE_IMPORT_DESCRIPTOR*)(((BYTE*)pDosHeader) + dataDirectory[1].VirtualAddress);
 	/* Loop through imported DLLs */
-	while (iid->Name)
+	while (iid->Characteristics)
 	{
 		const char* name = ((char*)process) + iid->Name;
 		if (stricmp(name, module) == 0)
-			return ModifyImportTable(iid, *original, hook);
+		{
+			*original = ModifyImportTable(iid, *original, hook);
+			return 1;
+		}
 		iid += 1;
 	}
 	return 0;
