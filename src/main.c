@@ -4,16 +4,26 @@
 
 #define LOGSIZE 1337
 
+
+typedef enum {
+	APPEND,
+	REMOVE
+} LoggerMode;
+
+typedef enum { 
+	false, 
+	true 
+} bool;
+
 struct Log
 {
 	size_t size;
 	void * addr;
-	char is_used;
+	bool is_used;
 };
 
 struct Log LogArray[LOGSIZE];
 char * hooked_dll = "ucrtbased.dll";
-
 
 
 int InstallHook(LPCSTR module, LPCSTR function, void* hook, void** original)
@@ -26,20 +36,22 @@ int InstallHook(LPCSTR module, LPCSTR function, void* hook, void** original)
 	IMAGE_DATA_DIRECTORY * dataDirectory = optionalHeader.DataDirectory;
 	IMAGE_IMPORT_DESCRIPTOR  * iid = (IMAGE_IMPORT_DESCRIPTOR*)(((BYTE*)dos_header) + dataDirectory[1].VirtualAddress);
 
+	size_t  dir_size = ((size_t)(((BYTE*)dos_header) + dataDirectory[1].Size) / sizeof(IMAGE_IMPORT_DESCRIPTOR));
+	size_t iter = 0;
 
 	/* Loop through imported DLLs */
-	while (iid->Characteristics)
+	while (iid->Characteristics && iter < dir_size)
 	{
 		const char* lib_name = ((char*)process) + iid->Name;
 		if (stricmp(lib_name, module) == 0)
 		{
-			IMAGE_THUNK_DATA * itd_name = ((IMAGE_THUNK_DATA*)(((char*)GetModuleHandle(NULL)) + iid->OriginalFirstThunk));
-			IMAGE_THUNK_DATA * itd_addr = ((IMAGE_THUNK_DATA*)(((char*)GetModuleHandle(NULL)) + iid->FirstThunk));
+			IMAGE_THUNK_DATA * itd_name = ((IMAGE_THUNK_DATA*)(((char*)process) + iid->OriginalFirstThunk));
+			IMAGE_THUNK_DATA * itd_addr = ((IMAGE_THUNK_DATA*)(((char*)process) + iid->FirstThunk));
 
 			/* Loop through functions in DLL */
 			while (itd_name->u1.AddressOfData)
 			{
-				char * funcName = ((IMAGE_IMPORT_BY_NAME*)(((char*)GetModuleHandle(NULL)) + itd_name->u1.AddressOfData))->Name;
+				char * funcName = ((IMAGE_IMPORT_BY_NAME*)(((char*)process) + itd_name->u1.AddressOfData))->Name;
 				if (strcmp(funcName, function) == 0)
 				{
 					/* Save address of original function from DLL */
@@ -55,7 +67,6 @@ int InstallHook(LPCSTR module, LPCSTR function, void* hook, void** original)
 					/* Enable read-only permissions */
 					VirtualProtect(mbi.BaseAddress, mbi.RegionSize, mbi.Protect, &mbi.Protect);
 
-					return 1;
 				}
 				++itd_name;
 				++itd_addr;
@@ -63,6 +74,7 @@ int InstallHook(LPCSTR module, LPCSTR function, void* hook, void** original)
 			return 1;
 		}
 		++iid;
+		++iter;
 	}
 
 	return 0;
@@ -73,20 +85,20 @@ void* (*RealCalloc) (size_t, size_t);
 void* (*RealRealloc) (void *, size_t);
 void(*RealFree) (void *);
 
-int MallocDebug_logger(char mode, size_t size, void* addr)
+int MallocDebug_logger(LoggerMode mode, size_t size, void* addr)
 {
 	/* Append mode */
-	if (addr && mode == 'a')
+	if (addr && mode == APPEND)
 	{
 		if (size == 0)
 			return 1;
 		for (size_t i = 0; i < LOGSIZE; ++i)
 		{
-			if (LogArray[i].is_used == 'n')
+			if (LogArray[i].is_used == false)
 			{
 				LogArray[i].addr = addr;
 				LogArray[i].size = size;
-				LogArray[i].is_used = 'y';
+				LogArray[i].is_used = true;
 				return 1;
 			}
 		}
@@ -94,13 +106,13 @@ int MallocDebug_logger(char mode, size_t size, void* addr)
 
 	}
 	/* Remove mode */
-	else if (addr && mode == 'r')
+	else if (addr && mode == REMOVE)
 	{
 		for (size_t i = 0; i < LOGSIZE; ++i)
 		{
-			if (LogArray[i].is_used == 'y' && LogArray[i].addr == addr)
+			if (LogArray[i].is_used == true && LogArray[i].addr == addr)
 			{
-				LogArray[i].is_used = 'n';
+				LogArray[i].is_used = false;
 				//printf("Free of mem at addr: %p\n", addr);
 				return 1;
 			}
@@ -113,7 +125,7 @@ int MallocDebug_logger(char mode, size_t size, void* addr)
 void* MallocDebug_malloc(size_t size)
 {
 	void * addr = RealMalloc(size);
-	MallocDebug_logger('a', size, addr);
+	MallocDebug_logger(APPEND, size, addr);
 	//printf("Hooked malloc; addr: %p, size: %d\n", addr, size);
 	return addr;
 }
@@ -121,7 +133,7 @@ void* MallocDebug_malloc(size_t size)
 void* MallocDebug_calloc(size_t num, size_t size)
 {
 	void * addr = RealCalloc(num, size);
-	MallocDebug_logger('a', size*num, addr);
+	MallocDebug_logger(APPEND, size*num, addr);
 	//printf("Hooked calloc; addr: %p, size: %d\n", addr, size);
 	return addr;
 }
@@ -129,9 +141,10 @@ void* MallocDebug_calloc(size_t num, size_t size)
 void* MallocDebug_realloc(void * addr, size_t size)
 {
 
-	MallocDebug_logger('r', 0, addr);
+	if (!MallocDebug_logger(REMOVE, 0, addr))
+		puts("Realloc: freeing already freed memory block.");
 	addr = RealRealloc(addr, size);
-	MallocDebug_logger('a', size, addr);
+	MallocDebug_logger(APPEND, size, addr);
 	//printf("Hooked realloc; addr: %p, size: %d\n", addr, size);
 
 	return addr;
@@ -141,8 +154,9 @@ void* MallocDebug_realloc(void * addr, size_t size)
 void MallocDebug_free(void * addr)
 {
 	//printf("Hooked free; addr: %p\n", addr);
-	if (MallocDebug_logger('r', 0, addr))
-		RealFree(addr);
+	if (!MallocDebug_logger(REMOVE, 0, addr))
+		puts("Free: Freeing already freed memory block.");
+	RealFree(addr);
 }
 
 /* Pointers to hooked functions when unhooking */
@@ -162,7 +176,7 @@ void MallocDebug_Init(void)
 	/* Initialize LogArray */
 	for (size_t i = 0; i < LOGSIZE; i++)
 	{
-		LogArray[i].is_used = 'n';
+		LogArray[i].is_used = false;
 	}
 	/* Hook functions with our ones */
 	InstallHook(hooked_dll, "malloc", (void*)MallocDebug_malloc, (void**)(&RealMalloc));
@@ -185,7 +199,7 @@ void MallocDebug_Done(void)
 	printf("======= REPORT =======\n");
 	for (size_t i = 0; i < LOGSIZE; i++)
 	{
-		if (LogArray[i].is_used == 'y')
+		if (LogArray[i].is_used == true)
 		{
 			printf("Memory at addr: %p not freed up, size: %u\n", LogArray[i].addr, LogArray[i].size);
 		}
@@ -204,10 +218,10 @@ int main()
 	void * str2 = malloc(50);
 	/* Double free */
 	free(str2);
-	free(str2);
-	void * str3 = realloc(malloc(30), 5);
+	//free(str2);
+	void * str3 = malloc(30);
 	str3 = realloc(str3, 5);
-	void * str4 = realloc(malloc(30), 0);
+	void * str4 = malloc(30);
 	str4 = realloc(str4, 0);
 	free(str);
 
