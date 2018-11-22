@@ -36,11 +36,11 @@ int InstallHook(LPCSTR module, LPCSTR function, void* hook, void** original)
 	IMAGE_DATA_DIRECTORY * dataDirectory = optionalHeader.DataDirectory;
 	IMAGE_IMPORT_DESCRIPTOR  * iid = (IMAGE_IMPORT_DESCRIPTOR*)(((BYTE*)dos_header) + dataDirectory[1].VirtualAddress);
 
-	size_t  dir_size = ((size_t)(((BYTE*)dos_header) + dataDirectory[1].Size) / sizeof(IMAGE_IMPORT_DESCRIPTOR));
+	size_t dir_size = ((size_t)(((BYTE*)dos_header) + dataDirectory[1].Size) / sizeof(IMAGE_IMPORT_DESCRIPTOR));
 	size_t iter = 0;
 
 	/* Loop through imported DLLs */
-	while (iid->Characteristics && iter < dir_size)
+	while (iter < dir_size && iid->Characteristics)
 	{
 		const char* lib_name = ((char*)process) + iid->Name;
 		if (stricmp(lib_name, module) == 0)
